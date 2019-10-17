@@ -1,0 +1,253 @@
+#!/usr/bin/python
+
+#from array import *
+import serial
+import time
+#from collections import defaultdict
+import sys
+#from nested_dict import NodesMatrix 
+from getSerialPortCooja import get1stpts
+import networkx as nx
+import matplotlib.pyplot as plt
+
+
+#-------------------------------------------------------------------#
+def getOrphanNodes():
+	for node in G.nodes():
+		predecessors = list(G.predecessors(node))
+		successors = list(G.successors(node))
+		in_degree = len(predecessors) # NOT USED
+		out_degree = len(successors)
+		
+		if out_degree == 0:
+			if (node != sink_ip): # sink is always an orphan
+				print ("Orphan n  found: ", node)
+				# send a probe message to the node. Such a node, 
+				# is obviously connected to the network, but we never 
+				# got his father info...	
+				probeMsg = "SP "+node+"\n"
+				#print "Probing msg: ", probeMsg
+				ser.write(probeMsg) #SP: Send Parent
+#-------------------------------------------------------------------#				
+def shortName(nodeIP):
+	short_name = nodeIP[1].rsplit(":",1)
+	return short_name[1]
+#-------------------------------------------------------------------#	
+def printGraph():
+	counter = 0
+	print "--------EDGES----------------------"
+	for n1, n2 in G.edges():
+		counter+=1
+		print counter," ", G.node[n1]['s_name'],"-->", G.node[n2]['s_name']
+	print "--------END OF GRAPH---------------"	
+#-------------------------------------------------------------------#
+def getSerPort():
+	port = "" # serial port of cooja sink mode
+	while not port: #if cooja port is not there, dont continue
+		port = get1stpts()
+		try:
+			port = get1stpts()
+		except serial.SerialException as e:
+			print ("Cooja Port Error ", e)
+
+	print ("\nCooja port found, continuing...\n")
+	return serial.Serial(port,  115200)#, timeout = 1)
+#-------------------------------------------------------------------#
+
+G = nx.DiGraph() #networkx graph
+
+sink_ip 	= "" # globaly used 
+noSink = 1 #there is no active sink yet
+printSinkMsg = ""
+printGraphOn = 0
+
+print("\n...INITIALIZING RPL OUTPUT READING...\n")
+ser = getSerPort() #get the pts (cooja) serial port automatically
+
+while True:
+	try: 
+		
+		readOut = ser.readline().rstrip('\n')#.decode('ascii')
+		#print readOut
+		
+		if(readOut.startswith("Tentative ")):# and noSink):
+		
+			sink_ip_2 = readOut.split("Tentative link-local IPv6 address ",1)			
+			sink_ip = "["+sink_ip_2[1]+"]"
+			s_name = sink_ip_2[1].rsplit(":",1)
+			s_name = s_name[1]
+			#print "sink s_name:",s_name
+
+			if(not printSinkMsg):
+			
+				print("MESSAGE ONCE ONLY-->Sink found: "+sink_ip+" short "+s_name)
+				printSinkMsg = 1
+			noSink = 0 #sink found. no need to reprobe
+			G.add_node(sink_ip, name = "sink", s_name=s_name)
+			#print G.node[sink_ip]['s_name']
+			
+#-------not used. It is problematic. Check udp-sink for details	----------#
+		elif(readOut.startswith("Sinks child")):
+			sinks_child = readOut.split("Sinks child: ",1)
+			sinks_child = sinks_child[1]
+			#sink_children.addRec(sink_ip,sinks_child)
+			print("Sink's direct child: "+sinks_child)
+#-------------------------------------------------------------------------#
+
+		elif(readOut.startswith("Route")):
+		
+			route = readOut.split("Route: ",1)
+			nodes = route[1]
+			nodes = nodes.split(" ",1)
+			child = nodes[0] #child
+			node = nodes[1]
+			node = node.split(" ",1)
+			lt = node[1]
+			node = node[0] #father
+			lt = lt.split(":",1)
+			lt = lt[1]
+
+			if ( child == node ):
+			
+				if (child not in G.nodes()):
+				
+					print("New child found: ", child, ", short ", s_name)
+					s_name = (child[1].rsplit(":",1))
+					s_name = s_name[1]
+
+				G.add_node(child, time=lt, s_name = s_name )
+				
+				
+				for n in G.predecessors(child):  #maybe an if to remove isolated nodes???
+					try:
+						print "Deleting child edge ",child," -->",n
+						G.remove_edge(child, n) # remove all previous parents
+					except Exception as e:
+						print "child edge removal error: ", e
+					
+					
+					
+				G.add_edge(child, sink_ip) # direct child of sink
+				#nx throws no exception if it exists
+				
+		elif(readOut.startswith("[NP")):
+		
+			np = readOut.split("[NP:",1)
+			neig = np[1] 
+			neig = neig.split(" ",1)
+			des = neig[1] #child
+			des = des.split("from ",1)
+			neig = neig[0]	#parent	
+			
+			if (neig == des[1]): # direct child of sink
+			
+				print "Direct child found: ", des[1]
+				s_name = (des[1].rsplit(":",1))
+				s_name = s_name[1]				
+				print "direct child s_name:", s_name
+								
+				if (des[1] not in G.nodes()):
+
+					print("New desce found: ", des[1], ", short ",s_name )
+					G.add_node(des[1], s_name = s_name)
+				
+				
+				
+				for n in G.predecessors(des[1]):
+					try:
+						print "Deleting desc edge ",des[1]," -->",n
+						G.remove_edge(des[1], n) # remove all previous parents
+					except Exception as e:
+						print "desce edge removal error: ", e
+						
+					
+					
+					
+					
+				G.add_edge(des[1],sink_ip)	
+				
+			else:
+			
+				if (neig not in G.nodes()):
+				
+					s_name = (neig.rsplit(":",1))
+					s_name = s_name[1].rsplit("]",1)
+					s_name = s_name[0]
+					print("New neigh found: ", neig, ", short ", s_name)
+					G.add_node(neig, s_name = s_name)
+					
+				if (des[1] not in G.nodes()):
+				
+					s_name = des[1].rsplit(":",1)
+					s_name = s_name[1].rsplit("]",1)
+					s_name = s_name[0]
+					print("New dest  found: ", des[1], ", short ", s_name, "via ",neig)
+					G.add_node(des[1], s_name = s_name )
+
+
+
+				for n in G.predecessors(des[1]):
+					try:
+						print "Deleting desc edge ",des[1]," -->",n
+						G.remove_edge(des[1], n) # remove all previous parents
+					except Exception as e:
+						print "dest edge removal error: ", e
+	
+				G.add_edge(des[1], neig)
+				
+				
+				
+		
+		if(noSink): # Safety measure: after 2-3 rounds, it should dissapear
+			print ("...Sink not set yet...")
+			pass #until it finds the sink
+		getOrphanNodes()
+		
+
+		printGraph()
+		'''
+		print "--------------- out_edges------------"
+		print G.out_edges()
+		print "--------------- out_edges------------"
+		'''
+			
+		
+		'''
+		if G.predecessors(n):
+			#we must delete them! if he found a new father !!!!!!!
+			print
+			
+		if (G.out_edges(node)):
+			print
+		'''
+		
+		
+		# TO DO: what to do with isolates???		
+		if(nx.isolates(G)):
+			for node in nx.isolates(G):
+				if(node!=sink_ip): # Sink is always isolated!
+					print("Isolated node ", node)
+				# TO DO: send a probing message to the sink
+
+
+		if(not noSink):
+			nx.draw(G,with_labels=True)
+			#plt.savefig("graph.png")
+			#plt.show()
+		
+		
+		#for n in G.nodes():
+		#	print n	
+				
+		#print ('Graph nodes ', G.number_of_nodes() )
+		#print( 'Graph edges ', G.number_of_edges() )
+		#print("Graph adj table: ", G.adj)
+		
+	except IOError as e:
+		print ("I/O error ",e)
+	except ValueError:
+		print ("Value problem.")
+	except Exception as e:
+		print ("Error ",e)
+		getSerPort()
+            #pass
