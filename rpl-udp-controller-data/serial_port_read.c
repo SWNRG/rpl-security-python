@@ -21,7 +21,7 @@ static int serial_input_byte(unsigned char c)
       //if(c == '}') uart_buffer[uart_buffer_index++] = c; // JSON specific
       uart_buffer[uart_buffer_index] = '\0';
       uart_buffer_index = 0;
-      printf("Received from UART (controller): %s\n",uart_buffer); 
+      PRINTF("Received from UART (controller): %s\n",uart_buffer); 
    } 
 }
 
@@ -31,8 +31,6 @@ static int serial_input_byte(unsigned char c)
  
  	uart1_set_input(serial_input_byte); //just this is enough
  	
- 	
- 
    PROCESS_BEGIN();
  
    for(;;) {

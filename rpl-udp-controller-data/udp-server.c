@@ -5,7 +5,7 @@
 #include "net/rpl/rpl.h"
 
 #include "net/netstack.h"
-#include "dev/button-sensor.h"
+//#include "dev/button-sensor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +15,7 @@
 #include "net/ip/uip-debug.h"
 
 /**** Read from serial port  ******/
- #include "dev/serial-line.h"
+//#include "dev/serial-line.h"
 #define UART_BUFFER_SIZE      100 
 static uint8_t uart_buffer[UART_BUFFER_SIZE];
 static uint8_t uart_buffer_index = 0;
@@ -38,7 +38,7 @@ static uint8_t uart_buffer_index = 0;
 
 static struct uip_udp_conn *server_conn;
 static rpl_dag_t *dag; //global
-int counter; //counting rounds. Not really needed
+static int counter; //counting rounds. Not really needed
 
 PROCESS(udp_server_process, "UDP server process");
 AUTOSTART_PROCESSES(&udp_server_process);
@@ -54,28 +54,31 @@ tcpip_handler(void)
     appdata[uip_datalen()] = 0;
     PRINTF("DATA recv '%s' from ", appdata);
     PRINTF("%d",UIP_IP_BUF->srcipaddr.u8[sizeof(UIP_IP_BUF->srcipaddr.u8) - 1]);
-    PRINTF("\n");
+    PRINTF("\n");  
     
-    /* node is sending a New Parent */
-    if(appdata[1] == 'N' && appdata[2] == 'P'){
-			child_node = &UIP_IP_BUF->srcipaddr;
-		   /* Need to convert again the sourceIP from global to local
-			 * i.e., from fd00 --. fe00. We dont want to play 
-			 * with the protocol, hence, return a local variable.
-			 */ 				
-		   child_node->u8[0] = (uint8_t *)254;
-		   child_node->u8[1] = (uint8_t *)128;    
-    		
-    		/* conntroller reads line starting with 2 chars (NP, etc.) */
-			printf("%s from ", appdata);
-			printLongAddr(child_node);	
-			printf("\n");     
+    if( (appdata[1] == 'N' && appdata[2] == 'P') || /* node is sending a New Parent */
+    	  (appdata[1] == 'S' && appdata[2] == 'U') ||/* node is sending UDP data (SU) */
+    	  (appdata[1] == 'S' && appdata[2] == 'I') ) /* node is sending ICMP data (SI) */
+    { 	
+    
+    	 child_node = &UIP_IP_BUF->srcipaddr;
+		 /* Need to convert again the sourceIP from global to local
+		 * i.e., from fd00 --. fe00. We dont want to play 
+		 * with the protocol, hence, return a local variable.
+		 */ 				
+		 child_node->u8[0] = (uint8_t *)254;
+		 child_node->u8[1] = (uint8_t *)128;
+    
+    	 /* conntroller reads line starting with 2 chars (NP, etc.) */
+		 printf("%s from ", appdata);
+		 printLongAddr(child_node);	
+		 printf("\n");     
     }
-    
+          
 #if SERVER_REPLY
     PRINTF("DATA sending reply\n");
     uip_ipaddr_copy(&server_conn->ripaddr, &UIP_IP_BUF->srcipaddr);
-    uip_udp_packet_send(server_conn, "Reply", sizeof("Reply"));
+    uip_udp_packet_send(server_conn, "Acknowledge", sizeof("Acknowledge"));
     uip_create_unspecified(&server_conn->ripaddr);
 #endif
   }
@@ -101,23 +104,36 @@ print_all_neighbors(void)
 	}
 	//printf("End of neighbors\n"); 		
 }
+/*----------------------------------------------------------------------------*/
+static void 
+printIP6Address(uip_ipaddr_t *addr_in)
+{
+uip_ipaddr_t *addr;
+addr = addr_in;
+	//(addr) 
+	printf("[%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x]", 
+	((uint8_t *)addr)[0], ((uint8_t *)addr)[1], ((uint8_t *)addr)[2], ((uint8_t *)addr)[3], 
+	((uint8_t *)addr)[4], ((uint8_t *)addr)[5], ((uint8_t *)addr)[6], ((uint8_t *)addr)[7], 
+	((uint8_t *)addr)[8], ((uint8_t *)addr)[9], ((uint8_t *)addr)[10], ((uint8_t *)addr)[11], 
+	((uint8_t *)addr)[12], ((uint8_t *)addr)[13], ((uint8_t *)addr)[14], ((uint8_t *)addr)[15]);
+}
+
 /*-------------- All direct children and their descentants -------------------*/
 static void
 print_all_routes(void)
 {
 	uip_ds6_route_t *r;
 	uip_ipaddr_t *nexthop;
-	uip_ipaddr_t *local_child; 
+	uip_ipaddr_t *local_child; 	 	 	
 		 	 	
 	for(r = uip_ds6_route_head();
 		r != NULL;
 		r = uip_ds6_route_next(r)) {
 		
 		 nexthop = uip_ds6_route_nexthop(r);
-		  
 		 local_child = &r->ipaddr;
 
-		 PRINTF("Counter: %d Route: %02d -> %02d", counter, 
+		 PRINTF("Counter: %d Route: %02d -> %02d\n", counter, 
 					r->ipaddr.u8[15], nexthop->u8[15]);
 
 		/* BE CAREFUL: WE DONT WANT TO MESS WITH THE IPs in RPL.
@@ -126,14 +142,14 @@ print_all_routes(void)
 		 */		 
 		 local_child->u8[0] = (uint8_t *)254;
 		 local_child->u8[1] = (uint8_t *)128;
-		 
+
 		 /* Controller is reading a line starting from "Route " */
 		 printf("Route: ");
-		 printLongAddr(local_child); //direct child
-		 // printLongAddr(&r->ipaddr); // fd00:...
+		 printIP6Address(local_child); //direct child
+		 //printLongAddr(&r->ipaddr); // fd00:...
 		 printf(" ");
-		 printLongAddr(nexthop); // all decentant(s)
-		 /* when lt->0, the connection does not exist any more */
+		 printIP6Address(nexthop); // all decentant(s)
+		 /* when lt >>> 0, the connection does not exist any more */
 		 printf(" lt:%lu\n", r->state.lifetime);	 
 	}//for *r 
 } 	
@@ -143,7 +159,7 @@ print_stats(void)
 {
 #define PRINTROUTES 1
 #define PRINTNBRS 0
-
+	
 	printf("Printing all ENABLED stats\n");  
 		 
 #if PRINTROUTES  
@@ -168,15 +184,15 @@ print_local_addresses(void)
   int i;
   uint8_t state;
 
-  PRINTF("Server IPv6 addresses: ");
+  printf("Server IPv6 addresses: ");
   for(i = 0; i < UIP_DS6_ADDR_NB; i++) {
     state = uip_ds6_if.addr_list[i].state;
     if(state == ADDR_TENTATIVE || state == ADDR_PREFERRED) {
-      PRINT6ADDR(&uip_ds6_if.addr_list[i].ipaddr);
-      PRINTF("\n");
+      printLongAddr(&uip_ds6_if.addr_list[i].ipaddr);
+      printf("\n");
       /* hack to make address "final" */
       if (state == ADDR_TENTATIVE) {
-	uip_ds6_if.addr_list[i].state = ADDR_PREFERRED;
+			uip_ds6_if.addr_list[i].state = ADDR_PREFERRED;
       }
     }
   }
@@ -192,15 +208,15 @@ serial_input_byte(unsigned char c)
 	char *in_comm;//[3]; //2 char+(\n)
 	in_comm = (char *) malloc(3);
 
-	PRINTF("New data from serial port\n");
-			
+	PRINTF("New data from serial port\n"); //java crashes. Because of overload?
+				
 	if(c != '\n' && uart_buffer_index < UART_BUFFER_SIZE){
 	  uart_buffer[uart_buffer_index++] = c;
 	}
 	else{
       uart_buffer[uart_buffer_index] = '\0';
       uart_buffer_index = 0;
-      PRINTF("Received from UART (controller): %s\n",uart_buffer); 
+      printf("Sink received from controller: %s\n",uart_buffer); 
 		
 		/* Start processing the message */
 		while(uart_buffer[i]!='\0'){
@@ -234,14 +250,14 @@ serial_input_byte(unsigned char c)
 			  uip_create_unspecified(&server_conn->ripaddr); //nullifies the IP
 			}
 			else{
-				printf("Failed to transform IPv6 from ");
+				printf("Failed IPv6: ");
 				int g;
 				for (g = 0; g!='\"'; g++){
 					printf("%c",node_ip[g]);
 				}
-				printf(". Output IP is ");
+				printf(". Output: ");
 				printLongAddr(&uip_node_ip);
-				printf("\nNo message was send!\n");
+				printf("\nNo msg sent!\n");
 		   }
 		   return 1;
 		} //while uart_buffer
@@ -253,21 +269,15 @@ serial_input_byte(unsigned char c)
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(udp_server_process, ev, data)
 {
-
-#define PRINTROUTES 1
-#define PRINTNBRS 0
-
   static struct etimer periodic;
   static struct ctimer backoff_timer;
-  
+	  
   uip_ipaddr_t ipaddr;
   struct uip_ds6_addr *root_if;
 
   PROCESS_BEGIN();
 
   PROCESS_PAUSE();
-
-  SENSORS_ACTIVATE(button_sensor);
 
   PRINTF("UDP server started. nbr:%d routes:%d\n",
          NBR_TABLE_CONF_MAX_NEIGHBORS, UIP_CONF_MAX_ROUTES);
@@ -319,6 +329,20 @@ PROCESS_THREAD(udp_server_process, ev, data)
   /* Waiting to read from the serial port */
   uart1_set_input(serial_input_byte);
   
+  
+ // TEST IT
+   // George prints all neighbors !!!
+  //printf("Printing neighbors method\n");
+  //rpl_print_neighbor_list(); 
+  
+  
+
+  
+  //Where is "George removing (drop) nbr" ?????????????????????????/
+
+
+
+
   etimer_set(&periodic, SEND_INTERVAL);
   while(1) {
     PROCESS_YIELD();
@@ -326,13 +350,15 @@ PROCESS_THREAD(udp_server_process, ev, data)
     if(ev == tcpip_event) {
       tcpip_handler();
     } 
-    
+ 
     if(etimer_expired(&periodic)) {
       etimer_reset(&periodic);
+
+     ctimer_set(&backoff_timer, SEND_INTERVAL, print_stats, NULL);	
+     
+     counter++; 
+     PRINTF("Counter: %d\n", counter);
       
-      /* printing all enabled stats every &backoff_timer */
-      ctimer_set(&backoff_timer, SEND_TIME, print_stats, NULL);	
-		counter++; 
     }
   }//end while
   PROCESS_END();

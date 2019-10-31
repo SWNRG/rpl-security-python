@@ -6,13 +6,15 @@
 #include "net/ip/uip-udp-packet.h"
 #include "sys/ctimer.h"
 
+#ifdef WITH_COMPOWER
+#include "powertrace.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
 #include "dev/serial-line.h"
 #include "net/ipv6/uip-ds6-route.h"
 #include "net/ipv6/uip-ds6-nbr.h"
-
 
 #define UDP_CLIENT_PORT 8765
 #define UDP_SERVER_PORT 5678
@@ -31,12 +33,14 @@
 #define SEND_TIME		(random_rand() % (SEND_INTERVAL))
 #define MAX_PAYLOAD_LEN		30
 
+/* NODE IS MOBILE, HENCE SHOULD NOT BE CHOSEN AS FATHER */
+#define RPL_CONF_LEAF_ONLY 1
+
 static struct uip_udp_conn *client_conn;
 static uip_ipaddr_t server_ipaddr;
 
 /* George: Get the preffered parent, and the current own IP of the node */
 #include "net/rpl/rpl-icmp6.c"
-
 extern   rpl_parent_t *dao_preffered_parent;
 extern   uip_ipaddr_t *dao_preffered_parent_ip;
 extern   uip_ipaddr_t dao_prefix_own_ip;
@@ -45,10 +49,6 @@ extern   uip_ipaddr_t dao_prefix_own_ip;
 static rpl_parent_t *my_cur_parent;
 static uip_ipaddr_t *my_cur_parent_ip;
 static int counter=0; //counting rounds. Not really needed
-
-/* Monitor those vars. When sink asks, the node will send  stats */
-static uint8_t send_stats_udp = 1;
-static uint8_t send_stats_icmp = 1;
 
 /* sink will ask ad-hoc for neibhbors. Use it with graph theory to find
  * intruders, and possible mobile nodes.
@@ -101,15 +101,12 @@ tcpip_handler(void)
 		 send_new_parent(my_cur_parent_ip);  	 
 	 }else if(str[0] == 'S' && str[1] == 'N'){ 
 			printf("Sink is probing my neighbors\n"); //sink asking for neighbors		
-			send_neighbors = 1; //trigger the nbr sending below	
-	 }else if(str[0] == 'S' && str[1] == 'U'){ 
-			printf("Sink is probing my neighbors\n"); //sink asking for UDP sent/recv		
-			send_stats_udp = 1; //trigger the nbr sending below	
-	 }else if(str[0] == 'S' && str[1] == 'I'){ 
-			printf("Sink is probing my neighbors\n"); //sink asking for ICMP sent/recv		
-			send_stats_icmp = 1; //trigger the nbr sending below					
-	 }else{	 
+			send_neighbors = 1; //trigger the nbr sending below		
+	 }else{
+	 
 	 	printf("DATA recv '%s' (s:%d, r:%d)\n", str, seq_id, reply);
+	 	
+	 	
 	 }
   }
 }
@@ -135,14 +132,11 @@ send_packet(void *ptr)
   }
  */
 #endif /* SERVER_REPLY */
-  
-  //double temp = (double)(rand() % 50);
-  	
+
   seq_id++;
-  
-  printf("DATA send to %d 'Seq %d'\n",
+  PRINTF("DATA send to %d 'Hello %d'\n",
          server_ipaddr.u8[sizeof(server_ipaddr.u8) - 1], seq_id);
-  sprintf(buf, "DATA %d from the client", seq_id);
+  sprintf(buf, "Hello %d from the client", seq_id);
   uip_udp_packet_sendto(client_conn, buf, strlen(buf),
                         &server_ipaddr, UIP_HTONS(UDP_SERVER_PORT));
 }
@@ -155,6 +149,9 @@ print_local_addresses(void)
 
   PRINTF("Client IPv6 addresses: ");
   for(i = 0; i < UIP_DS6_ADDR_NB; i++) {
+  
+  	 //printf("int i: %d\n",i);
+  	 
     state = uip_ds6_if.addr_list[i].state;
     if(uip_ds6_if.addr_list[i].isused &&
        (state == ADDR_TENTATIVE || state == ADDR_PREFERRED)) {
@@ -176,6 +173,22 @@ set_global_address(void)
   uip_ip6addr(&ipaddr, UIP_DS6_DEFAULT_PREFIX, 0, 0, 0, 0, 0, 0, 0);
   uip_ds6_set_addr_iid(&ipaddr, &uip_lladdr);
   uip_ds6_addr_add(&ipaddr, 0, ADDR_AUTOCONF);
+
+/* The choice of server address determines its 6LoWPAN header compression.
+ * (Our address will be compressed Mode 3 since it is derived from our
+ * link-local address)
+ * Obviously the choice made here must also be selected in udp-server.c.
+ *
+ * For correct Wireshark decoding using a sniffer, add the /64 prefix to the
+ * 6LowPAN protocol preferences,
+ * e.g. set Context 0 to fd00::. At present Wireshark copies Context/128 and
+ * then overwrites it.
+ * (Setting Context 0 to fd00::1111:2222:3333:4444 will report a 16 bit
+ * compressed address of fd00::1111:22ff:fe33:xxxx)
+ *
+ * Note the IPCMV6 checksum verification depends on the correct uncompressed
+ * addresses.
+ */
  
 #if 0
 /* Mode 1 - 64 bits inline */
@@ -223,7 +236,7 @@ print_all_neighbors(void)
 	printf("End of neighbors\n"); 	
 
 }
-/*-------------- All direct lifetime -------------------
+/*-------------- All direct children and their descentants -------------------
 uip_ds6_nbr_t *
 uip_ds6_get_least_lifetime_neighbor(void)
 {
@@ -268,49 +281,29 @@ monitor_DAO(void)
 	}
 }
 /*---------------------------------------------------------------------------*/
-static void
-send_extra_stats(void)
-{
-   char buf[MAX_PAYLOAD_LEN];
-/* *************** STATISTICS ENABLED BY THE SINK ************************** */      
-	if(send_stats_udp){
-		printf("Sending UDP stats to sink\n");
-		printf("R:%d, udp_sent:%d\n",counter,uip_stat.udp.sent);
-		printf("R:%d, udp_recv:%d\n",counter,uip_stat.udp.recv);
-
-		sprintf(buf, "[SU:%d %d]",uip_stat.udp.sent,uip_stat.udp.recv);
-		uip_udp_packet_sendto(client_conn, buf, strlen(buf),
-				     &server_ipaddr, UIP_HTONS(UDP_SERVER_PORT));		
-	}
-
-	if(send_stats_icmp){
-		printf("Sending ICMP stats to sink\n");
-
-		printf("R:%d, icmp_sent:%d\n",counter,uip_stat.icmp.sent);
-		printf("R:%d, icmp_recv:%d\n",counter,uip_stat.icmp.recv);
-
-		sprintf(buf, "[SI:%d %d]",uip_stat.icmp.sent,uip_stat.icmp.recv);
-		uip_udp_packet_sendto(client_conn, buf, strlen(buf),
-				     &server_ipaddr, UIP_HTONS(UDP_SERVER_PORT));				
-	}
-/* *************** STATISTICS ENABLED BY THE SINK ************************** */
-
-
-}
 PROCESS_THREAD(udp_client_process, ev, data)
 {
   static struct etimer periodic;
   static struct ctimer backoff_timer;
+#if WITH_COMPOWER
+  static int print = 0;
+#endif
 
   PROCESS_BEGIN();
 
   PROCESS_PAUSE();
-  
-  /* Try to enable these for details stats on neighbors and proper removal of
-   * a "dead" neoghbor from neighbors-table.
-   */
+
   printf("UIP_ND6_SEND_NA %d\n", UIP_ND6_SEND_NA);
   printf("UIP_ND6_SEND_NS %d\n", UIP_ND6_SEND_NS); 
+
+
+  /* If RPL_LEAF_ONLY == 1, node as a leaf cannot be chosen as father */
+  printf("RPL_LEAF_ONLY: %d, ",RPL_LEAF_ONLY); // TO DO: It does not seem to work
+  
+  rpl_set_mode(2); /* leaf mode =2, feather =1 */
+  printf("Leaf MODE: %d\n",rpl_get_mode());
+    
+
 
   set_global_address();
 
@@ -347,21 +340,22 @@ PROCESS_THREAD(udp_client_process, ev, data)
     if(etimer_expired(&periodic)) {
       etimer_reset(&periodic);
       
-      counter++;
-            
       /* sending regular data to sink (e.g. temperature measurements) */
       ctimer_set(&backoff_timer, SEND_TIME, send_packet, NULL);
-		
-		/* sending extra stats (UDP send/recv, ICMP send/recv to the sink, while
-		 * vars send_stats_icmp,send_stats_udp are on
-		 */
-		ctimer_set(&backoff_timer, SEND_TIME, send_extra_stats, NULL);
-		
+
 		/* First you have to make sure that old neighbors are removed.
 		 * This is connected with UIP_ND6_SEND_NA which is not enabled by default
 		 */
       //print_all_neighbors();
-
+      
+      counter++;
+/* *************** STATISTICS ENABLED BY THE SINK ************************** */
+      printf("R:%d, udp_sent:%d\n",counter,uip_stat.udp.sent);
+    	printf("R:%d, udp_recv:%d\n",counter,uip_stat.udp.recv);	
+    
+    	printf("R:%d, icmp_sent:%d\n",counter,uip_stat.icmp.sent);
+    	printf("R:%d, icmp_recv:%d\n",counter,uip_stat.icmp.recv);
+/* *************** STATISTICS ENABLED BY THE SINK ************************** */      
     }
   }//end while
   PROCESS_END();

@@ -2,6 +2,28 @@
 #ifndef PROJECT_CONF_H_
 #define PROJECT_CONF_H_
 
+
+/* Enable STATISTICS: it will give you UDP and ICMP per node */
+#define UIP_CONF_STATISTICS 1  
+
+#undef UIP_CONF_ND6_SEND_NS
+#define UIP_CONF_ND6_SEND_NS 0
+/*
+#undef UIP_CONF_ND6_SEND_NA
+#define UIP_CONF_ND6_SEND_NA 1
+*/
+
+/* inside rpl-mrhof.c you can enable printing details (rank) of chosen parent 
+ * Good for monitoring malicious node "destructive force".
+ * Remember, RPL can detect loops and avoid them, so eventually there will be
+ * one at least connection tot he sink, even if the malicious advertises low rank
+ */
+#ifndef PRINT_CHOOSING_PARENT_DETAILS
+#define PRINT_CHOOSING_PARENT_DETAILS 0
+#endif
+
+
+
 #ifndef WITH_NON_STORING
 #define WITH_NON_STORING 0 /* Set this to run with non-storing mode */
 #endif /* WITH_NON_STORING */
