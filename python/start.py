@@ -11,30 +11,52 @@ import socket
 #-------------------------------------------------------------------#
 def getICMP_stats(node):
 	probeMsg = "SI "+node+"\n"
-	#print "Probing msg: ", probeMsg
+	#print "getICMP_stats msg: ", probeMsg
 	ser.makefile().write(probeMsg) #SP: Send Parent
 #-------------------------------------------------------------------#
 def getUDP_stats(node):
 	probeMsg = "SU "+node+"\n"
-	#print "Probing msg: ", probeMsg
+	#print "getUDP_stats msg: ", probeMsg
 	ser.makefile().write(probeMsg) #SP: Send Parent
 #-------------------------------------------------------------------#
-def getOrphanNodes():
+def getOrphanNodes(ser, counter):
+#send a probe message to the node. Such a node, is obviously connected 
+#to the network, but we never got his father info...
 	for node in G.nodes():
-		predecessors = list(G.predecessors(node)) # parents
-		successors = list(G.successors(node))	  # children
-		in_degree = len(predecessors) 
-		out_degree = len(successors) # NOT USED
-		
-		if in_degree == 0:
-			if (node != sink_ip): # sink is always an orphan
-				print "Probing orphan node : ", node
-				# send a probe message to the node. Such a node, 
-				# is obviously connected to the network, but we never 
-				# got his father info...	
-				probeMsg = "SP "+node+"\n"
-				#print "Probing msg: ", probeMsg
-				ser.makefile().write(probeMsg) #SP: Send Parent
+			predecessors = list(G.predecessors(node)) # parents
+			successors = list(G.successors(node))	  # children
+			in_degree = len(predecessors) 
+			out_degree = len(successors) # NOT USED
+			
+			printSmallNames(counter)
+									
+			if in_degree == 0:
+				if (node != sink_ip): # sink is always an orphan
+					try:
+						#print "Node.probed:",G.node[node]['probed']
+						if(G.node[probed]>counter-5):							
+							probeMsg = "SP "+node+"\n"
+							print "Probing msg: ", "SP ",node
+							ser.send(probeMsg.encode())
+							G.add_node(node, probed = counter)
+							#delay a bit. Looks like UART is ok now!
+							time.sleep(0.5)	
+						else:
+							G.add_node(node, probed=counter)
+					except Exception as e:
+						print "Exception:",e
+						"Node:",node," ERROR PROBING"
+					finally:
+						print "Adding node: ",G.node[node]['s_name']
+						G.add_node(node, probed=0)
+						print "Added node: ",node," ,probed=",G.node[node]['probed']
+						
+#-------------------------------------------------------------------#						
+def s_name2dec(n1):
+	num1 = G.node[n1]['s_name'][2]
+	num2 = G.node[n1]['s_name'][3]
+	dec_name = int(str(num1)+str(num2),16) #int(s, 16) from hex to dec
+	return dec_name
 #-------------------------------------------------------------------#				
 def shortName(nodeIP):
 	short_name = nodeIP[1].rsplit(":",1)
@@ -45,14 +67,25 @@ def printGraph(rounds):
 	print "---Round: ", rounds,"------EDGES------------"
 	for n1, n2 in G.edges():
 		counter+=1
-		#print counter," ", G.node[n1]['s_name'],"-->", G.node[n2]['s_name']
-		print counter, " ",n1," --> ",n2
-	print "--------------END OF GRAPH---------------"	
+		#print counter," ", G.node[n1]['s_name'],"<---", G.node[n2]['s_name']
+		print counter, " ",n1," <--- ",n2
+	print "--------------END OF GRAPH---------------\n"	
 #-------------------------------------------------------------------#	
 def printNodes():
 	if G.nodes():
 		for n in G.nodes():
 			print "node: ",n
+#-------------------------------------------------------------------#	
+def printSmallNames(rounds):
+	counter = 0
+	print "--R: ", rounds,", GRAPH------------------"
+	for n1, n2 in G.edges():
+		counter+=1
+		node1 = s_name2dec(n1)
+		node2 = s_name2dec(n2)
+		#print counter," ", G.node[n1]['s_name'],"<---", G.node[n2]['s_name']
+		print counter,"\t", node1,"<---", node2
+	print "--------------END OF GRAPH---------------"	
 #-------------------------------------------------------------------#
 def removePredecessors(nodeIn):
 	try:
@@ -65,25 +98,19 @@ def removePredecessors(nodeIn):
 			G.remove_edge(p,nodeIn)
 	except Exception as e:
 		print "Failed to delete predecessor(s) of ",nodeIn,": ",e
-#-------------------------------------------------------------------#	
-def getTunslip6Port():
-	'''
-	Creates an array of ALL available tunslip6 ports.
-	all tunsilp6 availiable ports wiil be in d[], 
-	but only the first port is returned
-	'''
-	address = "localhost"
-	port = 60001
-	try:
-		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		sock.settimeout(3.0)
-		sock.connect((address, port))
-		if(sock.makefile()):
-			print "Open port found at ",address,", port ",port
-		#sock.close() # it returns "bad file decsriptor..."
-		return sock#.makefile()	
-	except Exception as e:
-		print ("get cooja Port Error: ", e)
+#-------------------------------------------------------------------#
+def getCoojaPort():
+	server_address = ("localhost",60001)
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	con = False
+	while (not con):
+		try:
+			sock.connect(server_address)
+			con = True
+			print "Open port found at ",server_address
+		except Exception as e:
+			print ("get cooja Port Error: ", e)
+	return sock
 #-------------------------------------------------------------------#	
 	
 G = nx.DiGraph() #networkx graph
@@ -98,69 +125,72 @@ printSinkMsg = ""
 printGraphOn = 0
 
 print "\n...INITIALIZING RPL OUTPUT READING...\n"
-ser = ""
-while (not ser):
-	ser = getTunslip6Port()	
-	#time.sleep(2)
-print "Serial port found: ", ser
-
+ser = getCoojaPort()
+		
 while True:
 	try:
 		rounds+=1
-
+#======== Reading every incoming line======================================		
+		readOut = ser.makefile().readline().rstrip('\n')#.decode('ascii')
+		#print readOut,"\n"
+#==========================================================================		
 		if (rounds%6==0): # if it fires on every round, cooja crashes
-			# check for orphan nodes and probe them
-			getOrphanNodes()
+			# check for orphan nodes and probe them each one every five rounds
+			getOrphanNodes(ser,rounds)
+#======= extra safety: edges = nodes -1 ===================================
+			if (G.number_of_edges()!= G.number_of_nodes()-1):
+				print "Iregularity: edges:",G.number_of_edges(),"nodes:",G.number_of_nodes()	
+#=============== Setting up the sink if not found after a few rounds=======
+		if(noSinkYet): # Safety measure: after 2-3 rounds, it should disappear
+			counter+=1
+			print ("...Sink not set yet...")
+			#continue #until it finds the sink	
 		#if the sink's IP is not probed, set it up to 0101
 		if(counter >5): 
 			sinkNeverFound = 1
-			
-		readOut = ser.makefile().readline().rstrip('\n')#.decode('ascii')
-
-#============== Sent/Recvd UDP packets per node ==========================
+		if (sinkNeverFound): #if sink was not found after a while
+			sink_ip = "[fe80:0000:0000:0000:0212:7401:0001:0101]"
+			print "setting sink: ",sink_ip
+			s_name = "0101"			
+#============== Sent/Recvd UDP packets FROM node ==========================
 		if(readOut.startswith("[SU:")):
 			msg = readOut.split("[SU:",1)	
-			print ("SU msg: ", msg[1])
 			msgAll = msg[1].split("]",1)
 			UDP_all = msgAll[0]
 			clientIP = msgAll[1]
+			clientIP = clientIP.split("from ",1)
+			clientIP = clientIP[1]
 			nums=UDP_all.split(" ",1)
-			print "nums",nums
 			sentUDP = nums[0]
-			print "sentUDP",sentUDP
-			recvUDP = nums[1]
-			print "recvUDP", recvUDP
-#============== Sent/Recvd ICMP packets per node ==========================
-		if(readOut.startswith("[SI:")):
+			recvUDP = nums[1]			
+			# what to do with the above? In G graph or in dictionary?
+			#G.add_node(clientIP, sentUDP = sentUDP, recvUDP = recvUDP)
+#============== Sent/Recvd ICMP packets FROM node ==========================
+		elif(readOut.startswith("[SI:")):
 			msg = readOut.split("[SI:",1)	
-			print ("SI msg: ", msg[1])
 			msgAll = msg[1].split("]",1)
 			UDP_all = msgAll[0]
 			clientIP = msgAll[1]
+			clientIP = clientIP.split("from ",1)
+			clientIP = clientIP[1]
 			nums=UDP_all.split(" ",1)
-			print "nums",nums
 			sentICMP = nums[0]
-			print "sentICMP",sentICMP
 			recvICMP = nums[1]
-			print "recvUDP", recvICMP
+			# what to do with the above? In G graph or in dictionary?
+			#G.add_node(clientIP, sentICMP = sentICMP, recvICMP = recvICMP)
 #=============== Sink's IP ADDRESS (If found)==============================
-		if(readOut.startswith("Tentative ")):# and noSinkYet):		
+		elif(readOut.startswith("Tentative ")):# and noSinkYet):		
 			sink_ip_2 = readOut.split("Tentative link-local IPv6 address ",1)			
 			sink_ip = "["+sink_ip_2[1]+"]"
 			s_name = sink_ip_2[1].rsplit(":",1)
 			s_name = s_name[1]
 			#print "sink s_name:",s_name
-		
 			if(not printSinkMsg):			
 				print "MESSAGE ONCE ONLY-->Sink found: "+sink_ip+" short "+s_name
 				printSinkMsg = 1
 			
 			noSinkYet = 0 #sink found. no need to reprobe
-			G.add_node(sink_ip, name = "sink", s_name=s_name)
-			
-		if (sinkNeverFound): #if sink was not found after a while		
-			sink_ip = "[fe80:0000:0000:0000:0212:7401:0001:0101]"
-			s_name = "0101"		
+			G.add_node(sink_ip, name = "sink", s_name=s_name)	
 #=========not used. It is problematic. Check udp-sink for details==========
 		elif(readOut.startswith("Sinks child")):
 			sinks_child = readOut.split("Sinks child: ",1)
@@ -207,12 +237,13 @@ while True:
 						G.add_node(neig, s_name = s_name)
 #============ Removing old father if new one found =======================						
 					else:
-						#print "Deleting predecessors of ", des[1]
+						print "Deleting predecessors of ", des[1]
 						removePredecessors(des[1])
 						
 					# in both cases add the edge	
 					print "Adding sink-->child ",sink_ip,"-->",des[1]
 					G.add_edge( sink_ip, des[1] )	#sink --> des[1]
+#============ Printing network graph ====================================
 					printGraph(rounds)
 				
 				else: # not a direct child of sink
@@ -234,18 +265,19 @@ while True:
 						#delete a possible old edge of neig
 						removePredecessors(des[1])
 						# NOT a direct child of sink
-						print "Adding new edge ",neig,"-->",des[1]
-						G.add_edge( neig, des[1] ) # from --> to	
-						printGraph(rounds)						
+						print "Adding new edge ",s_name2dec(neig),"-->",s_name2dec(des[1])
+						
+						G.add_edge( neig, des[1] ) # from --> to							
+#=============PRINTING THE GRAPH============================================						
+						#ONLY HERE THE GRAPH PRINTS
+						#printGraph(rounds)		
+						
+						
+						
+						
 						
 					#else:
 						#print "Edge exists: ", neig,"-->",des[1]
-						
-		if(noSinkYet): # Safety measure: after 2-3 rounds, it should dissapear
-			counter+=1
-			print ("...Sink not set yet...")
-			#continue #until it finds the sink
-
 
 		'''
 		# TO DO: what to do with isolates??? Is there something to DO???	
@@ -305,8 +337,17 @@ while True:
 			#plt.show()
 		
 		
-		#for n in G.nodes():
-		#	print n	
+		'''
+		print "start of nodes"
+		countR =0
+		for n in sorted(G.nodes()):
+			countR+=1
+			print countR," ",n	
+		print "end of nodes"
+		'''		
+				
+				
+				
 				
 		#print ('Graph nodes ', G.number_of_nodes() )
 		#print( 'Graph edges ', G.number_of_edges() )
